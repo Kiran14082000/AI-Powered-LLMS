@@ -1,83 +1,124 @@
+import os
 import cv2
 import numpy as np
+import threading
+import tkinter as tk
+from tkinter import filedialog
+from PIL import Image, ImageTk
+from transformers import pipeline
 
-# Paths to the model configuration, weights, and labels
-model_cfg = 'yolov3.cfg'         # Path to the YOLO configuration file
-model_weights = 'yolov3.weights' # Path to the YOLO weights file
-coco_names_path = 'coco.names'   # Path to the COCO class labels file
+# Disable TensorFlow warnings
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Load YOLO model
-net = cv2.dnn.readNetFromDarknet(model_cfg, model_weights)
+# Initialize the VQA pipeline
+vqa_pipeline = pipeline("visual-question-answering", model="Salesforce/blip-vqa-base")
 
-# Ensure all files are accessible
-import os
-assert os.path.exists(model_cfg), "Configuration file not found!"
-assert os.path.exists(model_weights), "Weights file not found!"
-assert os.path.exists(coco_names_path), "COCO names file not found!"
+# Initialize camera
+cap = cv2.VideoCapture(0)
+selected_roi = None  # Store ROI for processing
 
-# Read COCO class labels
-with open(coco_names_path, 'r') as f:
-    classes = f.read().strip().split('\n')
-
-# Get YOLO output layer names
-layer_names = net.getLayerNames()
-
-# Handle OpenCV version differences for getUnconnectedOutLayers
-try:
-    output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers().flatten()]
-except AttributeError:
-    output_layers = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
-
-# Initialize the camera or video feed
-cap = cv2.VideoCapture(0)  # Use '0' for webcam or replace with video file path
-if not cap.isOpened():
-    print("Error: Unable to access the camera.")
-    exit()
-
-# Processing the video feed
-while True:
+def capture_frame():
+    """Captures a frame from the camera."""
+    global selected_roi
     ret, frame = cap.read()
     if not ret:
-        print("Error: Unable to capture frame.")
-        break
+        return None
+    return frame
 
-    # Resize the frame and convert to blob for YOLO
-    height, width, channels = frame.shape
-    blob = cv2.dnn.blobFromImage(frame, scalefactor=1/255.0, size=(416, 416), swapRB=True, crop=False)
-    net.setInput(blob)
+def select_roi():
+    """Allows the user to select an object (ROI) using OpenCV's selectROI function."""
+    global selected_roi
+    frame = capture_frame()
+    if frame is None:
+        return
+    roi = cv2.selectROI("Select Object", frame, fromCenter=False, showCrosshair=True)
+    cv2.destroyWindow("Select Object")
+    if roi != (0, 0, 0, 0):  # If a region was selected
+        x, y, w, h = roi
+        selected_roi = frame[y:y+h, x:x+w]
+        display_selected_roi()
 
-    # Forward pass through YOLO
-    detections = net.forward(output_layers)
+def display_selected_roi():
+    """Displays the selected ROI in the Tkinter UI."""
+    if selected_roi is None:
+        return
+    img = cv2.cvtColor(selected_roi, cv2.COLOR_BGR2RGB)
+    img = Image.fromarray(img)
+    img = img.resize((200, 200))
+    img_tk = ImageTk.PhotoImage(img)
+    roi_label.config(image=img_tk)
+    roi_label.image = img_tk  # Keep reference to avoid garbage collection
 
-    # Parsing detections
-    for detection in detections:
-        for obj in detection:
-            scores = obj[5:]  # Class confidence scores
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
+def ask_question():
+    """Processes the selected ROI with the user's question."""
+    global selected_roi
+    if selected_roi is None:
+        result_label.config(text="Please select an object first.")
+        return
+    question = question_entry.get()
+    if not question:
+        result_label.config(text="Enter a question.")
+        return
+    
+    # Save ROI as an image for processing
+    roi_path = "roi.jpg"
+    cv2.imwrite(roi_path, selected_roi)
+    
+    # Run VQA in a separate thread to prevent UI freezing
+    def vqa_thread():
+        try:
+            answer = vqa_pipeline(roi_path, question)
+            result_label.config(text=f"Answer: {answer[0]['answer']}")
+        except Exception as e:
+            result_label.config(text=f"Error: {e}")
+    threading.Thread(target=vqa_thread, daemon=True).start()
 
-            if confidence > 0.5:  # Filter out weak detections
-                # Object bounding box
-                center_x = int(obj[0] * width)
-                center_y = int(obj[1] * height)
-                w = int(obj[2] * width)
-                h = int(obj[3] * height)
+def reset_selection():
+    """Resets the selection and clears the UI."""
+    global selected_roi
+    selected_roi = None
+    roi_label.config(image="")
+    result_label.config(text="")
+    question_entry.delete(0, tk.END)
 
-                x = int(center_x - w / 2)
-                y = int(center_y - h / 2)
+def close_app():
+    """Closes the application and releases the camera."""
+    cap.release()
+    cv2.destroyAllWindows()
+    root.destroy()
 
-                # Draw bounding box and label
-                label = f"{classes[class_id]}: {confidence:.2f}"
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+# Create Tkinter UI
+root = tk.Tk()
+root.title("AI Object Detection & Question Answering")
 
-    # Display the frame
-    cv2.imshow('YOLO Object Detection', frame)
+# UI Elements
+frame_top = tk.Frame(root)
+frame_top.pack()
 
-    # Break loop on 'q' key press
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+select_button = tk.Button(frame_top, text="Select Object", command=select_roi)
+select_button.pack(side=tk.LEFT, padx=10, pady=5)
 
-# Release resources
-cap.release()
-cv2.destroyAllWindows()
+question_entry = tk.Entry(frame_top, width=50)
+question_entry.pack(side=tk.LEFT, padx=10, pady=5)
+
+ask_button = tk.Button(frame_top, text="Ask", command=ask_question)
+ask_button.pack(side=tk.LEFT, padx=10, pady=5)
+
+roi_label = tk.Label(root)
+roi_label.pack(pady=10)
+
+result_label = tk.Label(root, text="", font=("Arial", 12))
+result_label.pack()
+
+button_frame = tk.Frame(root)
+button_frame.pack()
+
+reset_button = tk.Button(button_frame, text="Reset", command=reset_selection)
+reset_button.pack(side=tk.LEFT, padx=10, pady=5)
+
+quit_button = tk.Button(button_frame, text="Quit", command=close_app)
+quit_button.pack(side=tk.LEFT, padx=10, pady=5)
+
+# Run Tkinter event loop
+root.mainloop()
