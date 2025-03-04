@@ -1,124 +1,98 @@
 import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow logs
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")  # Suppress deprecation warnings
+
 import cv2
 import numpy as np
-import threading
-import tkinter as tk
-from tkinter import filedialog
-from PIL import Image, ImageTk
 from transformers import pipeline
 
-# Disable TensorFlow warnings
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-# Initialize the VQA pipeline
+# Initialize the VQA pipeline with a BLIP model
 vqa_pipeline = pipeline("visual-question-answering", model="Salesforce/blip-vqa-base")
+
+# Variables for drawing and detection
+drawing = False
+points = []
+roi = None  # Store the extracted ROI
+question_mode = False  # Flag to indicate if we're in question mode
+
+# Mouse callback function for freehand drawing
+def draw_freehand(event, x, y, flags, param):
+    global drawing, points
+    if event == cv2.EVENT_LBUTTONDOWN:
+        drawing = True
+        points = [(x, y)]
+    elif event == cv2.EVENT_MOUSEMOVE and drawing:
+        points.append((x, y))
+    elif event == cv2.EVENT_LBUTTONUP:
+        drawing = False  # Stop drawing, trigger detection
 
 # Initialize camera
 cap = cv2.VideoCapture(0)
-selected_roi = None  # Store ROI for processing
+cv2.namedWindow('Circle an Object and Ask Questions')
+cv2.setMouseCallback('Circle an Object and Ask Questions', draw_freehand)
 
-def capture_frame():
-    """Captures a frame from the camera."""
-    global selected_roi
+while True:
     ret, frame = cap.read()
     if not ret:
-        return None
-    return frame
+        print("Error: Unable to capture frame.")
+        break
 
-def select_roi():
-    """Allows the user to select an object (ROI) using OpenCV's selectROI function."""
-    global selected_roi
-    frame = capture_frame()
-    if frame is None:
-        return
-    roi = cv2.selectROI("Select Object", frame, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Select Object")
-    if roi != (0, 0, 0, 0):  # If a region was selected
-        x, y, w, h = roi
-        selected_roi = frame[y:y+h, x:x+w]
-        display_selected_roi()
+    # Draw the freehand shape while the user is drawing
+    if len(points) > 1:
+        cv2.polylines(frame, [np.array(points, np.int32)], False, (255, 0, 0), 2)
 
-def display_selected_roi():
-    """Displays the selected ROI in the Tkinter UI."""
-    if selected_roi is None:
-        return
-    img = cv2.cvtColor(selected_roi, cv2.COLOR_BGR2RGB)
-    img = Image.fromarray(img)
-    img = img.resize((200, 200))
-    img_tk = ImageTk.PhotoImage(img)
-    roi_label.config(image=img_tk)
-    roi_label.image = img_tk  # Keep reference to avoid garbage collection
+    # Extract the ROI when drawing stops and no ROI has been extracted yet
+    if not drawing and len(points) > 2 and roi is None:
+        # Create a mask for the region of interest (ROI)
+        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(mask, [np.array(points, np.int32)], 255)
 
-def ask_question():
-    """Processes the selected ROI with the user's question."""
-    global selected_roi
-    if selected_roi is None:
-        result_label.config(text="Please select an object first.")
-        return
-    question = question_entry.get()
-    if not question:
-        result_label.config(text="Enter a question.")
-        return
-    
-    # Save ROI as an image for processing
-    roi_path = "roi.jpg"
-    cv2.imwrite(roi_path, selected_roi)
-    
-    # Run VQA in a separate thread to prevent UI freezing
-    def vqa_thread():
+        # Extract the ROI
+        roi = cv2.bitwise_and(frame, frame, mask=mask)
+
+        # Show the ROI (for debugging)
+        cv2.imshow('ROI', roi)
+
+        # Save the ROI as an image file (required for the VQA model)
+        roi_path = "roi.jpg"
+        cv2.imwrite(roi_path, roi)
+
+        # Enter question mode
+        question_mode = True
+
+    # If in question mode, allow the user to ask questions
+    if question_mode:
+        # Ask the user for a question
+        question = input("Ask a question about the circled object (or type 'reset' to draw a new region, 'quit' to exit): ")
+
+        if question.lower() == 'quit':
+            break
+        elif question.lower() == 'reset':
+            # Reset the state to allow drawing a new region
+            points = []
+            roi = None
+            question_mode = False
+            print("Region reset. Draw a new region.")
+            continue
+
+        # Use the VQA model to answer the question
         try:
             answer = vqa_pipeline(roi_path, question)
-            result_label.config(text=f"Answer: {answer[0]['answer']}")
+            print(f"Answer: {answer[0]['answer']}")
         except Exception as e:
-            result_label.config(text=f"Error: {e}")
-    threading.Thread(target=vqa_thread, daemon=True).start()
+            print(f"Error: {e}")
 
-def reset_selection():
-    """Resets the selection and clears the UI."""
-    global selected_roi
-    selected_roi = None
-    roi_label.config(image="")
-    result_label.config(text="")
-    question_entry.delete(0, tk.END)
+    # Show the frame
+    cv2.imshow('Circle an Object and Ask Questions', frame)
 
-def close_app():
-    """Closes the application and releases the camera."""
-    cap.release()
-    cv2.destroyAllWindows()
-    root.destroy()
+    # Controls: Quit ('q')
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
 
-# Create Tkinter UI
-root = tk.Tk()
-root.title("AI Object Detection & Question Answering")
-
-# UI Elements
-frame_top = tk.Frame(root)
-frame_top.pack()
-
-select_button = tk.Button(frame_top, text="Select Object", command=select_roi)
-select_button.pack(side=tk.LEFT, padx=10, pady=5)
-
-question_entry = tk.Entry(frame_top, width=50)
-question_entry.pack(side=tk.LEFT, padx=10, pady=5)
-
-ask_button = tk.Button(frame_top, text="Ask", command=ask_question)
-ask_button.pack(side=tk.LEFT, padx=10, pady=5)
-
-roi_label = tk.Label(root)
-roi_label.pack(pady=10)
-
-result_label = tk.Label(root, text="", font=("Arial", 12))
-result_label.pack()
-
-button_frame = tk.Frame(root)
-button_frame.pack()
-
-reset_button = tk.Button(button_frame, text="Reset", command=reset_selection)
-reset_button.pack(side=tk.LEFT, padx=10, pady=5)
-
-quit_button = tk.Button(button_frame, text="Quit", command=close_app)
-quit_button.pack(side=tk.LEFT, padx=10, pady=5)
-
-# Run Tkinter event loop
-root.mainloop()
+# Release resources
+cap.release()
+cv2.destroyAllWindows()
