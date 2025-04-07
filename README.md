@@ -78,6 +78,8 @@
 ## 🧪 Demo
 
 > Coming soon — video demo & Hugging Face Spaces live app.
+![image](https://github.com/user-attachments/assets/83d0283a-e7b5-4ee8-a683-fa2308e24b62)
+
 
 ## 🙌 Credits
 
