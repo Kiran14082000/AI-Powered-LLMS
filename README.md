@@ -1,4 +1,4 @@
-# 🧠 AI Vision Assistant - Chat with Objects
+# 🧠 What-sCooken.AI - Chat with Objects
 
 > A multimodal AI application that lets you **hover over real-world objects**, select them with a key press, and **ask questions** about them using powerful image understanding and language models.
 
