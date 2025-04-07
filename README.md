@@ -93,4 +93,10 @@
 
 This project is open-source under the [MIT License](LICENSE).
 
-## 🤖 Built with passion by [Kiran Gobi Manivannan](https://github.com/yourusername)
+## 🤖 Built with passion by 
+## 👥 Collaborators
+
+- [Kiran Gobi Manivannan](https://github.com/Kiran14082000)
+- [Gowtham SR](https://github.com/Gowtham-sr)
+- [Skowshi](https://github.com/skowshi)
+
