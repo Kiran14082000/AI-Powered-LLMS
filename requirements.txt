@@ -1,0 +1,8 @@
+opencv-python
+numpy
+customtkinter
+transformers
+scikit-learn
+pytesseract
+deepface
+requests
